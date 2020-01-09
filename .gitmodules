@@ -1,0 +1,7 @@
+[submodule "static/noVNC"]
+	path = static/noVNC
+	url = https://github.com/logeable/noVNC.git
+[submodule "static/noVNCPlayer"]
+	path = static/noVNCPlayer
+	url = https://github.com/logeable/noVNC.git
+	branch = player
