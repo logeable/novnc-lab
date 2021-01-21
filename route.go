@@ -3,13 +3,16 @@ package main
 import (
 	"context"
 	"encoding/binary"
+	"fmt"
 	"io"
 	"io/ioutil"
 	"log"
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path"
+	"path/filepath"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -19,13 +22,14 @@ import (
 
 func router() http.Handler {
 	r := gin.Default()
-	r.Static("ui", "static/noVNC")
-	r.Static("play", "static/noVNCPlayer")
-	r.GET("", func(c *gin.Context) {
-		c.Redirect(http.StatusSeeOther, "/ui/vnc.html")
-	})
-	r.GET("websockify", websockify)
+	r.Static("client", "static/noVNC")
+	r.Static("player", "static/noVNCPlayer")
+	r.Static("rfbplayer", "static/rfbplayer")
+
+	r.GET("websockify/:addr", websockify)
 	r.GET("playback/:id", playback)
+	r.GET("playback-rfb/:id", playbackRfb)
+	r.GET("playback-rfb-dbg", playbackRfbDbg)
 	return r
 }
 
@@ -35,7 +39,9 @@ var upgrader = websocket.Upgrader{
 }
 
 func websockify(c *gin.Context) {
-	id := time.Now().Format("2006-15-04-05")
+	addr := c.Param("addr")
+
+	id := time.Now().Format("2006-01-02 15-04-05")
 	log.Println("new connection: ", id)
 	defer func() {
 		log.Println("connection closed: ", id)
@@ -47,7 +53,8 @@ func websockify(c *gin.Context) {
 	}
 	defer conn.Close()
 
-	vncConn, err := net.Dial("tcp", "10.10.20.12:5901")
+	log.Printf("connect to: %v", addr)
+	vncConn, err := net.Dial("tcp", addr)
 	if err != nil {
 		log.Printf("dial vncserver failed: %v\n", err)
 		return
@@ -102,8 +109,9 @@ func websockify(c *gin.Context) {
 
 	go func() {
 		defer cancel()
-		os.MkdirAll("sess", os.ModeDir)
-		f, err := os.Create(path.Join("sess", id))
+		file := path.Join("resources", "sess", id)
+		os.MkdirAll(filepath.Dir(file), os.ModeDir)
+		f, err := os.Create(file)
 		if err != nil {
 			log.Println(err)
 		}
@@ -145,7 +153,7 @@ func playback(c *gin.Context) {
 		log.Println("playback done", id)
 	}()
 
-	f, err := os.Open(path.Join("sess", id))
+	f, err := os.Open(path.Join("resources", "sess", id))
 	if err != nil {
 		log.Println("open file failed:", err)
 		return
@@ -213,5 +221,168 @@ func playback(c *gin.Context) {
 			}
 		}
 	}()
+	<-ctx.Done()
+}
+
+func playbackRfb(c *gin.Context) {
+	id := c.Param("id")
+	log.Printf("play rfb: %v", id)
+	rfbfile := filepath.Clean(filepath.Join("resources", "rfb", id))
+	if filepath.Dir(rfbfile) != "resources/rfb" {
+		c.AbortWithError(http.StatusForbidden, fmt.Errorf("invalid rfb file: %q", rfbfile))
+		return
+	}
+
+	wsConn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
+	if err != nil {
+		log.Printf("upgrade failed: %v\n", err)
+		return
+	}
+	defer wsConn.Close()
+
+	cmd := exec.Command("java", "-cp", "GuiPlayer.jar", "PlayerServer", rfbfile)
+
+	playerServerIn, err := cmd.StdinPipe()
+	if err != nil {
+		log.Printf("stdin pipe failed: %v", err)
+		return
+	}
+	playerServerOut, err := cmd.StdoutPipe()
+	if err != nil {
+		log.Printf("stdout pipe failed: %v", err)
+		return
+	}
+	playerServerError, err := cmd.StderrPipe()
+	if err != nil {
+		log.Printf("stderr pipe failed: %v", err)
+		return
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		defer func() {
+			cancel()
+		}()
+		for {
+			_, r, err := wsConn.NextReader()
+			if err != nil {
+				return
+			}
+			if _, err := io.Copy(playerServerIn, r); err != nil {
+				return
+			}
+		}
+	}()
+
+	go func() {
+		defer func() {
+			cancel()
+		}()
+
+		var buf [1 << 20]byte
+		for {
+			n, err := playerServerOut.Read(buf[:])
+			if err != nil {
+				log.Println("read from out conn failed:", err)
+				return
+			}
+			w, err := wsConn.NextWriter(websocket.BinaryMessage)
+			if err != nil {
+				return
+			}
+			_, err = w.Write(buf[:n])
+			if err != nil {
+				return
+			}
+			w.Close()
+		}
+	}()
+
+	go func() {
+		defer func() {
+			cancel()
+		}()
+
+		var buf [1 << 20]byte
+		for {
+			n, err := playerServerError.Read(buf[:])
+			if err != nil {
+				log.Println("read from err conn failed:", err)
+				return
+			}
+
+			log.Printf("err: %s", buf[:n])
+		}
+	}()
+
+	if err := cmd.Start(); err != nil {
+		log.Printf("run guiplayer failed: %v", err)
+	}
+
+	<-ctx.Done()
+	cmd.Process.Kill()
+}
+
+func playbackRfbDbg(c *gin.Context) {
+	addr := c.Param("addr")
+
+	if addr == "" {
+		addr = "localhost:8889"
+	}
+	conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
+	if err != nil {
+		log.Printf("upgrade failed: %v\n", err)
+		return
+	}
+	defer conn.Close()
+
+	log.Printf("connect to debug server: %v", addr)
+	psConn, err := net.Dial("tcp", addr)
+	if err != nil {
+		log.Printf("dial vncserver failed: %v\n", err)
+		return
+	}
+	defer psConn.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		defer func() {
+			cancel()
+		}()
+		for {
+			_, r, err := conn.NextReader()
+			if err != nil {
+				return
+			}
+			if _, err := io.Copy(psConn, r); err != nil {
+				return
+			}
+		}
+	}()
+
+	go func() {
+		defer func() {
+			cancel()
+		}()
+
+		var buf [1 << 20]byte
+		for {
+			n, err := psConn.Read(buf[:])
+			if err != nil {
+				log.Println("read from vnc conn failed:", err)
+				return
+			}
+			w, err := conn.NextWriter(websocket.BinaryMessage)
+			if err != nil {
+				return
+			}
+			_, err = w.Write(buf[:n])
+			if err != nil {
+				return
+			}
+			w.Close()
+		}
+	}()
+
 	<-ctx.Done()
 }

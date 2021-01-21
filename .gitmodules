@@ -5,3 +5,7 @@
 	path = static/noVNCPlayer
 	url = https://github.com/logeable/noVNC.git
 	branch = player
+[submodule "static/rfbplayer"]
+	path = static/rfbplayer
+	url = git@github.com:logeable/noVNC
+	branch = rfbplayer
