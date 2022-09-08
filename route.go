@@ -26,6 +26,7 @@ func router() http.Handler {
 	r.Static("player", "static/noVNCPlayer")
 	r.Static("rfbplayer", "static/rfbplayer")
 
+	r.GET("/", redirectNoVNC)
 	r.GET("websockify/:addr", websockify)
 	r.GET("playback/:id", playback)
 	r.GET("playback-rfb/:id", playbackRfb)
@@ -36,6 +37,10 @@ func router() http.Handler {
 var upgrader = websocket.Upgrader{
 	ReadBufferSize:  1 << 20,
 	WriteBufferSize: 1 << 20,
+}
+
+func redirectNoVNC(c *gin.Context) {
+	c.Redirect(http.StatusMovedPermanently, "/client/vnc.html")
 }
 
 func websockify(c *gin.Context) {
