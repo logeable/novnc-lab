@@ -181,7 +181,7 @@ func playback(c *gin.Context) {
 			if err != nil {
 				return
 			}
-			_, err = ioutil.ReadAll(r)
+			_, err = io.ReadAll(r)
 			if err != nil {
 				return
 			}
