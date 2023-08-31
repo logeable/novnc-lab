@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/binary"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -13,6 +14,7 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"strconv"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -46,7 +48,7 @@ func redirectNoVNC(c *gin.Context) {
 func websockify(c *gin.Context) {
 	addr := c.Param("addr")
 
-	id := time.Now().Format("2006-01-02 15-04-05")
+	id := time.Now().Unix()
 	log.Println("new connection: ", id)
 	defer func() {
 		log.Println("connection closed: ", id)
@@ -114,8 +116,8 @@ func websockify(c *gin.Context) {
 
 	go func() {
 		defer cancel()
-		file := path.Join("resources", "sess", id)
-		os.MkdirAll(filepath.Dir(file), os.ModeDir)
+		file := path.Join("resources", "sess", strconv.FormatInt(id, 10))
+		os.MkdirAll(filepath.Dir(file), 0755)
 		f, err := os.Create(file)
 		if err != nil {
 			log.Println(err)
